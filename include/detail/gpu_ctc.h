@@ -2,7 +2,6 @@
 
 #include "ctc_helper.h"
 #include "gpu_ctc_kernels.h"
-#include "reduce.h"
 
 template <typename ProbT>
 class GpuCTC {
@@ -96,8 +95,6 @@ class GpuCTC {
         ProbT *alphas_;
         ProbT *nll_forward_;
         ProbT *nll_backward_;
-        ProbT *denoms_; // Temporary storage for denoms for softmax
-        ProbT *probs_; // Temporary storage for probabilities (softmax output)
 };
 
 template<typename ProbT>
@@ -241,17 +238,6 @@ GpuCTC<ProbT>::setup_gpu_metadata(const int* const flat_labels,
                                   gpu_bytes_used);
     gpu_bytes_used += (S_ * T_) * minibatch_ * sizeof(ProbT);
 
-
-    denoms_ =
-        reinterpret_cast<ProbT *>(static_cast<char*>(gpu_workspace_) +
-                                  gpu_bytes_used);
-    gpu_bytes_used += activation_cols_ * sizeof(ProbT);
-
-    probs_ =
-        reinterpret_cast<ProbT *>(static_cast<char*>(gpu_workspace_) +
-                                  gpu_bytes_used);
-    gpu_bytes_used += out_dim_ * activation_cols_ * sizeof(ProbT);
-
     return CTC_STATUS_SUCCESS;
 }
 
@@ -355,51 +341,6 @@ GpuCTC<ProbT>::launch_gpu_kernels(const ProbT* const probs,
 
 template<typename ProbT>
 ctcStatus_t
-GpuCTC<ProbT>::compute_probs(const ProbT* const activations) {
-
-    cudaError_t cuda_status;
-    cuda_status =
-        cudaMemcpyAsync(probs_, activations,
-                        activation_cols_ * out_dim_ *sizeof(ProbT),
-                        cudaMemcpyDeviceToDevice, stream_);
-    if (cuda_status != cudaSuccess)
-        return CTC_STATUS_MEMOPS_FAILED;
-
-    // Numerically stable SM
-    ctcStatus_t ctc_status =
-        reduce_max(probs_, denoms_, out_dim_,
-                   activation_cols_, 1, stream_);
-    if (ctc_status != CTC_STATUS_SUCCESS)
-        return ctc_status;
-
-    // Kernel launch to subtract maximum
-    const int NT = 128;
-    const int VT = 1;
-    const int NV = NT * VT;
-    const int num_elements = out_dim_ * activation_cols_;
-    const int grid_size = ctc_helper::div_up(num_elements, NV);
-
-    prepare_stable_SM_kernel<ProbT, VT> <<< grid_size, NT, 0, stream_>>>
-       (ctc_helper::identity<ProbT>(), probs_,
-        denoms_, out_dim_, num_elements);
-
-    // Reduce along columns to calculate denominator
-    ctc_status =
-        reduce_exp(probs_, denoms_, out_dim_,
-                   activation_cols_, 1, stream_);
-    if (ctc_status != CTC_STATUS_SUCCESS)
-        return ctc_status;
-
-    // Kernel launch to calculate probabilities
-    compute_probs_kernel<ProbT, VT><<<grid_size, NT, 0, stream_>>>
-        (ctc_helper::exponential<ProbT>(), probs_,
-         denoms_, out_dim_, num_elements);
-
-    return CTC_STATUS_SUCCESS;
-}
-
-template<typename ProbT>
-ctcStatus_t
 GpuCTC<ProbT>::compute_cost_and_score(const ProbT* const activations,
                                       ProbT* grads,
                                       ProbT* costs,
@@ -417,11 +358,7 @@ GpuCTC<ProbT>::compute_cost_and_score(const ProbT* const activations,
     if (status != CTC_STATUS_SUCCESS)
         return status;
 
-    status = compute_probs(activations);
-    if (status != CTC_STATUS_SUCCESS)
-        return status;
-
-    launch_gpu_kernels(probs_, grads, best_config,
+    launch_gpu_kernels(activations, grads, best_config,
                        compute_alpha, compute_betas_and_grad);
 
     cudaError_t cuda_status_mem, cuda_status_sync;

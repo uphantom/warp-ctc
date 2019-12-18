@@ -231,7 +231,7 @@ ProbT CpuCTC<ProbT>::compute_alphas(const ProbT* probs, int repeats, int S, int 
             end = S > 1 ? 2 : 1;
 
     for (int i = start; i < end; ++i) {
-        alphas[i] = std::log(probs[labels[i]]);
+        alphas[i] = probs[labels[i]];
     }
 
     for(int t = 1; t < T; ++t) {
@@ -244,7 +244,7 @@ ProbT CpuCTC<ProbT>::compute_alphas(const ProbT* probs, int repeats, int S, int 
         int idx1 = t * S, idx2 = (t - 1) * S, idx3 = t * (alphabet_size_ * minibatch_);
 
         if (start == 0) {
-            alphas[idx1] = alphas[idx2] + std::log(probs[blank_label_ + idx3]);
+            alphas[idx1] = alphas[idx2] + probs[blank_label_ + idx3];
             startloop += 1;
         }
 
@@ -255,7 +255,7 @@ ProbT CpuCTC<ProbT>::compute_alphas(const ProbT* probs, int repeats, int S, int 
             if (labels[i] != blank_label_ && i != 1 && labels[i] != labels[i-2])
                 prev_sum = ctc_helper::log_plus<ProbT>()(prev_sum, alphas[(i-2) + idx2]);
 
-            alphas[i + idx1] = prev_sum + std::log(probs[labels[i] + idx3]);
+            alphas[i + idx1] = prev_sum + probs[labels[i] + idx3];
         }
     }
 
@@ -288,7 +288,7 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
 
     //set the starting values in the beta column at the very right edge
     for (int i = start; i < end; ++i) {
-        betas[i] = std::log(probs[labels[i] + (T - 1) * (alphabet_size_ * minibatch_)]);
+        betas[i] = probs[labels[i] + (T - 1) * (alphabet_size_ * minibatch_)];
 
         //compute alpha * beta in log space at this position in (S, T) space
         alphas[i + (T - 1) * S] += betas[i];
@@ -300,6 +300,7 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
     }
 
     //update the gradient wrt to each unique label
+	/*
     for (int i = 0; i < alphabet_size_; ++i) {
         int idx3 = (T - 1) * alphabet_size_ * minibatch_ + i;
 
@@ -310,7 +311,12 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
             grad[idx3] = probs[idx3] - std::exp(output[i] -
                                                 std::log(probs[idx3]) - log_partition);
         }
-    }
+    }*/
+
+    for (int i = 0; i < alphabet_size_; ++i) {
+        int idx3 = (T - 1) * alphabet_size_ * minibatch_ + i;
+        grad[idx3] = std::exp(output[i] - probs[idx3] - log_partition);
+	}
 
     //loop from the second to last column all the way to the left
     for(int t = T - 2; t >= 0; --t) {
@@ -331,7 +337,7 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
             if (labels[i] != blank_label_ && i != (S-2) && labels[i] != labels[i+2]){
                 next_sum = ctc_helper::log_plus<ProbT>()(next_sum, betas[(i+2)]);
             }
-            betas[i] = next_sum + std::log(probs[labels[i] + idx3]);
+            betas[i] = next_sum + probs[labels[i] + idx3];
 
             //compute alpha * beta in log space
             alphas[i + idx1] += betas[i];
@@ -342,7 +348,7 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
         }
 
         if (end == S) {
-            betas[(S-1)] = betas[(S-1)] + std::log(probs[blank_label_ + idx3]);
+            betas[(S-1)] = betas[(S-1)] + probs[blank_label_ + idx3];
             alphas[(S-1) + idx1] += betas[(S-1)];
 
             output[labels[S-1]] =
@@ -351,6 +357,7 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
 
         //go over the unique labels and compute the final grad
         // wrt to each one at this time step
+		/*
         for (int i = 0; i < alphabet_size_; ++i) {
 
             if (output[i] == 0.0 || output[i] == ctc_helper::neg_inf<ProbT>() ||
@@ -361,7 +368,12 @@ ProbT CpuCTC<ProbT>::compute_betas_and_grad(ProbT* grad, const ProbT* const prob
                                                     std::log(probs[idx3]) - log_partition);
             }
             ++idx3;
-        }
+        }*/
+
+        for (int i = 0; i < alphabet_size_; ++i) {
+            grad[idx3] = std::exp(output[i] - probs[idx3] - log_partition);
+            ++idx3;
+		}
     }
 
     ProbT loglike = ctc_helper::neg_inf<ProbT>();
